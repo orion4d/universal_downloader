@@ -1,5 +1,7 @@
 # 🌐 Téléchargeur Universel vidéo audio
 
+<img width="1428" height="976" alt="image" src="https://github.com/user-attachments/assets/cf6cb18d-6ef7-4535-aba6-21423a47bfe1" />
+
 ## 🚀 Application de téléchargement vidéo/audio multi-plateforme avec interface Gradio
 
 ### ✨ Fonctionnalités
