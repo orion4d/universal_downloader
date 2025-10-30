@@ -40,7 +40,7 @@
 
 ### Prérequis
 
-**Python 3.8+** et **FFmpeg** (optionnel mais recommandé pour l'extraction audio)
+**Python 3.12+** et **FFmpeg** (optionnel mais recommandé pour l'extraction audio)
 
 #### Installer FFmpeg (Windows)
 
