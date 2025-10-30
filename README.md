@@ -343,5 +343,4 @@ Format de `download_history.json` :
 Ce projet est open-source. Utilise-le librement pour tes besoins personnels ou professionnels.
 
 ---
-
-    **Avertissement légal :** Cet outil est fourni à des fins éducatives et de convenance personnelle. Il est de votre responsabilité de vous assurer que vous avez le droit de télécharger le contenu que vous ciblez. Veuillez respecter les lois sur le droit d'auteur de votre pays ainsi que les conditions d'utilisation des plateformes. Le développeur de cet outil ne peut être tenu responsable d'une utilisation illégale de celui-ci.
+Avertissement : Cet outil est fourni à des fins éducatives et de convenance personnelle. Il est de votre responsabilité de vous assurer que vous avez le droit de télécharger le contenu que vous ciblez. Veuillez respecter les lois sur le droit d'auteur de votre pays ainsi que les conditions d'utilisation des plateformes. Le développeur de cet outil ne peut être tenu responsable d'une utilisation illégale de celui-ci.
