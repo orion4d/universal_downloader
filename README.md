@@ -185,7 +185,10 @@ universal-downloader/
 │   └── Audio_track.mp3
 └── download_history.json        # Historique (créé auto)
 ```
+## ⚠️ Avertissement YouTube - Configuration des Cookies Requise
 
+### 🚨 Depuis **octobre 2025**, YouTube bloque activement les téléchargements via `yt-dlp` sans authentification.
+Conseil : utilisez très occasionnellement cette application pour télécharger les vidéos Youtube (risque de blocage IP)
 ---
 
 ## 🔧 Configuration
