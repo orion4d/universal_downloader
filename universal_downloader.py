@@ -322,7 +322,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="purple", secondary_hue="blue"),
     platform_state = gr.State("")
 
     gr.HTML("""
-        <div style="text-align: center; font-size: 2.5em; font-weight: bold;">🌐 Téléchargeur Universel PRO</div>
+        <div style="text-align: center; font-size: 2.5em; font-weight: bold;">🌐 Téléchargeur Universel</div>
         <div style="text-align: center; color: #666; margin-bottom: 1.5em;">
             Téléchargement direct et file d'attente automatique.
         </div>
