@@ -12,6 +12,7 @@ from datetime import datetime
 import json
 import re
 from itertools import count
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 # ==============================================================================
 # CONFIG
@@ -59,22 +60,113 @@ def format_duration(seconds):
     return f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
 
 
+YOUTUBE_CANONICAL_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+}
+
+# Domaines tiers/alternatifs connus qui servent de passerelle vers une vidéo YouTube.
+# Ils sont convertis vers une URL officielle AVANT de passer la requête à yt-dlp.
+YOUTUBE_ALIAS_HOSTS = {
+    "yout-ube.com",
+    "www.yout-ube.com",
+    "youtube-nocookie.com",
+    "www.youtube-nocookie.com",
+}
+
+YOUTUBE_TRACKING_PARAMS = {"si", "feature", "app"}
+
+
+def _normalized_hostname(url):
+    """Retourne le hostname en minuscules, sans port final."""
+    try:
+        return (urlsplit(str(url or "").strip()).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def is_youtube_url(url):
+    """Détecte YouTube par hostname exact (évite les faux positifs par sous-chaîne)."""
+    host = _normalized_hostname(url)
+    return host in YOUTUBE_CANONICAL_HOSTS or host in YOUTUBE_ALIAS_HOSTS
+
+
+def normalize_video_url(url):
+    """Normalise les variantes YouTube connues vers une URL officielle stable.
+
+    Exemples :
+      yout-ube.com/shorts/ID      -> youtube.com/shorts/ID
+      youtube-nocookie.com/embed/ID -> youtube.com/watch?v=ID
+      youtu.be/ID                 -> youtube.com/watch?v=ID
+
+    Les paramètres de playlist sont conservés ; seuls quelques paramètres de
+    partage/traçage sans utilité pour l'extraction sont supprimés.
+    """
+    raw = str(url or "").strip()
+    if not raw:
+        return raw
+
+    try:
+        parts = urlsplit(raw)
+    except Exception:
+        return raw
+
+    if parts.scheme.lower() not in {"http", "https"}:
+        return raw
+
+    host = (parts.hostname or "").lower()
+    path = parts.path or "/"
+    query_pairs = parse_qsl(parts.query, keep_blank_values=True)
+
+    # Supprime uniquement les paramètres de partage/traçage non nécessaires.
+    query_pairs = [
+        (k, v) for k, v in query_pairs
+        if not k.lower().startswith("utm_") and k.lower() not in YOUTUBE_TRACKING_PARAMS
+    ]
+
+    if host == "youtu.be":
+        video_id = path.strip("/").split("/")[0] if path.strip("/") else ""
+        if video_id:
+            query_pairs = [("v", video_id)] + [(k, v) for k, v in query_pairs if k != "v"]
+            return urlunsplit(("https", "www.youtube.com", "/watch", urlencode(query_pairs, doseq=True), ""))
+
+    if host in YOUTUBE_CANONICAL_HOSTS or host in YOUTUBE_ALIAS_HOSTS:
+        # Toutes les variantes/alias sont ramenées sur le domaine officiel.
+        canonical_host = "www.youtube.com"
+
+        # Un embed youtube-nocookie est plus fiable pour yt-dlp sous forme /watch?v=.
+        if path.startswith("/embed/"):
+            video_id = path.split("/embed/", 1)[1].split("/", 1)[0]
+            if video_id:
+                query_pairs = [("v", video_id)] + [(k, v) for k, v in query_pairs if k != "v"]
+                path = "/watch"
+
+        return urlunsplit(("https", canonical_host, path, urlencode(query_pairs, doseq=True), ""))
+
+    return raw
+
+
 def detect_platform(url):
-    """Détecte la plateforme depuis l'URL."""
+    """Détecte la plateforme depuis le hostname, avec support des alias YouTube."""
+    if is_youtube_url(url):
+        return "YouTube"
+
+    host = _normalized_hostname(url)
     platforms = {
-        "YouTube": ["youtube.com", "youtu.be"],
-        "Facebook": ["facebook.com", "fb.watch"],
-        "Instagram": ["instagram.com"],
-        "TikTok": ["tiktok.com"],
-        "Twitter/X": ["twitter.com", "x.com"],
-        "Vimeo": ["vimeo.com"],
-        "Dailymotion": ["dailymotion.com"],
-        "Twitch": ["twitch.tv"],
-        "Reddit": ["reddit.com", "redd.it"],
+        "Facebook": {"facebook.com", "www.facebook.com", "m.facebook.com", "fb.watch"},
+        "Instagram": {"instagram.com", "www.instagram.com"},
+        "TikTok": {"tiktok.com", "www.tiktok.com", "vm.tiktok.com"},
+        "Twitter/X": {"twitter.com", "www.twitter.com", "x.com", "www.x.com"},
+        "Vimeo": {"vimeo.com", "www.vimeo.com", "player.vimeo.com"},
+        "Dailymotion": {"dailymotion.com", "www.dailymotion.com", "dai.ly"},
+        "Twitch": {"twitch.tv", "www.twitch.tv"},
+        "Reddit": {"reddit.com", "www.reddit.com", "redd.it"},
     }
-    url_lower = str(url or "").lower()
     for platform, domains in platforms.items():
-        if any(domain in url_lower for domain in domains):
+        if host in domains:
             return platform
     return "Autre/Inconnu"
 
@@ -147,6 +239,19 @@ def build_ydl_base_opts(cookie_mode="Aucun", cookies_file=None, user_agent="", u
         opts["impersonate"] = "chrome"
 
     return opts
+
+
+def apply_privacy_policy(url, privacy_mode, cookie_mode, cookies_file, user_agent, use_impersonate):
+    """Applique le mode confidentialité uniquement aux URLs YouTube.
+
+    Ce mode évite d'envoyer volontairement à yt-dlp les cookies du navigateur,
+    un User-Agent personnalisé et l'impersonation demandés dans l'interface.
+    Il ne rend PAS la connexion anonyme : le serveur distant voit toujours la
+    connexion réseau (notamment l'adresse IP publique).
+    """
+    if privacy_mode and is_youtube_url(url):
+        return "Aucun", None, "", False
+    return cookie_mode, cookies_file, user_agent, use_impersonate
 
 
 # ==============================================================================
@@ -247,6 +352,11 @@ def _perform_download(item):
     cookies_file = item.get("cookies_file")
     user_agent = item.get("user_agent", "")
     use_impersonate = item.get("use_impersonate", False)
+    privacy_mode = item.get("privacy_mode", True)
+
+    cookie_mode, cookies_file, user_agent, use_impersonate = apply_privacy_policy(
+        url, privacy_mode, cookie_mode, cookies_file, user_agent, use_impersonate
+    )
 
     try:
         current_download.update({
@@ -369,6 +479,7 @@ def handle_download_request(
     cookies_file=None,
     user_agent="",
     use_impersonate=False,
+    privacy_mode=True,
 ):
     """Ajoute un téléchargement à la file avec garde anti-ancienne URL."""
     current_url = (current_url or "").strip()
@@ -377,7 +488,9 @@ def handle_download_request(
     if not analyzed_url:
         return "⚠️ Analyse d'abord l'URL avant de télécharger."
 
-    if current_url != analyzed_url:
+    # Compare les versions normalisées afin qu'un alias YouTube reste compatible
+    # avec la garde anti-ancienne URL.
+    if normalize_video_url(current_url) != normalize_video_url(analyzed_url):
         return "⚠️ L'URL a changé depuis la dernière analyse. Clique d'abord sur 🔍 Analyser pour éviter de télécharger l'ancienne vidéo."
 
     if not all([format_id, title, platform]):
@@ -399,6 +512,7 @@ def handle_download_request(
         "cookies_file": cookies_file,
         "user_agent": user_agent,
         "use_impersonate": use_impersonate,
+        "privacy_mode": bool(privacy_mode),
     }
 
     with queue_lock:
@@ -485,7 +599,7 @@ def get_download_history():
     return history_md
 
 
-def analyze_url_and_update_ui(url, cookie_mode="Aucun", cookies_file=None, user_agent="", use_impersonate=False):
+def analyze_url_and_update_ui(url, cookie_mode="Aucun", cookies_file=None, user_agent="", use_impersonate=False, privacy_mode=True):
     """Analyse l'URL et force un état propre pour éviter l'ancien téléchargement."""
     # Reset immédiat des états liés à l'ancienne vidéo.
     yield (
@@ -507,11 +621,18 @@ def analyze_url_and_update_ui(url, cookie_mode="Aucun", cookies_file=None, user_
     )
 
     try:
-        clean_url = (url or "").strip()
-        if not clean_url.startswith("http"):
+        original_url = (url or "").strip()
+        if not original_url.lower().startswith(("http://", "https://")):
             raise ValueError("URL invalide")
 
-        opts = build_ydl_base_opts(cookie_mode, cookies_file, user_agent, use_impersonate)
+        clean_url = normalize_video_url(original_url)
+        effective_cookie_mode, effective_cookies_file, effective_user_agent, effective_impersonate = apply_privacy_policy(
+            clean_url, privacy_mode, cookie_mode, cookies_file, user_agent, use_impersonate
+        )
+
+        opts = build_ydl_base_opts(
+            effective_cookie_mode, effective_cookies_file, effective_user_agent, effective_impersonate
+        )
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(clean_url, download=False)
 
@@ -563,10 +684,23 @@ def analyze_url_and_update_ui(url, cookie_mode="Aucun", cookies_file=None, user_
         webpage_url = info.get("webpage_url") or clean_url
         duration = format_duration(info.get("duration"))
 
+        normalized_note = ""
+        if clean_url != original_url:
+            normalized_note = f"**URL normalisée :** `{clean_url}`\n\n"
+
+        privacy_note = ""
+        if is_youtube_url(clean_url):
+            if privacy_mode:
+                privacy_note = "🔒 **Confidentialité YouTube : active** — cookies navigateur, User-Agent personnalisé et impersonation ignorés.\n\n"
+            else:
+                privacy_note = "🔓 **Confidentialité YouTube : désactivée** — les options d'authentification choisies peuvent être utilisées.\n\n"
+
         info_text = (
             f"✅ Vidéo trouvée ({duration})\n\n"
+            f"{privacy_note}"
             f"**ID détecté :** `{video_id}`\n\n"
-            f"**URL analysée :** `{clean_url}`\n\n"
+            f"**URL saisie :** `{original_url}`\n\n"
+            f"{normalized_note}"
             f"**URL canonique yt-dlp :** `{webpage_url}`"
         )
 
@@ -647,6 +781,12 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="purple", secondary_hue="blue"),
             with gr.Row():
                 url_input = gr.Textbox(label="URL de la vidéo", placeholder="https://...", scale=4)
                 analyze_btn = gr.Button("🔍 Analyser", variant="primary", scale=1)
+
+            privacy_mode = gr.Checkbox(
+                label="🔒 Mode confidentialité YouTube (recommandé)",
+                value=True,
+                info="Pour YouTube uniquement : ignore les cookies navigateur, le User-Agent personnalisé et l'impersonation. L'adresse IP reste visible par le service.",
+            )
 
             with gr.Accordion("Options Facebook / sites protégés", open=False):
                 cookie_mode = gr.Dropdown(
@@ -732,12 +872,12 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="purple", secondary_hue="blue"),
 
     analyze_btn.click(
         fn=analyze_url_and_update_ui,
-        inputs=[url_input, cookie_mode, cookies_file, user_agent, use_impersonate],
+        inputs=[url_input, cookie_mode, cookies_file, user_agent, use_impersonate, privacy_mode],
         outputs=analysis_outputs,
     )
     url_input.submit(
         fn=analyze_url_and_update_ui,
-        inputs=[url_input, cookie_mode, cookies_file, user_agent, use_impersonate],
+        inputs=[url_input, cookie_mode, cookies_file, user_agent, use_impersonate, privacy_mode],
         outputs=analysis_outputs,
     )
 
@@ -751,26 +891,27 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="purple", secondary_hue="blue"),
         cookies_file,
         user_agent,
         use_impersonate,
+        privacy_mode,
     ]
 
     download_combined_btn.click(
-        fn=lambda current_url, analyzed_url, fmt, title, platform, video_id, cm, cf, ua, imp: handle_download_request(current_url, analyzed_url, fmt, "combined", title, platform, video_id, cm, cf, ua, imp),
-        inputs=[url_input, analyzed_url_state, combined_list, video_title_state, platform_state, video_id_state, cookie_mode, cookies_file, user_agent, use_impersonate],
+        fn=lambda current_url, analyzed_url, fmt, title, platform, video_id, cm, cf, ua, imp, priv: handle_download_request(current_url, analyzed_url, fmt, "combined", title, platform, video_id, cm, cf, ua, imp, priv),
+        inputs=[url_input, analyzed_url_state, combined_list, video_title_state, platform_state, video_id_state, cookie_mode, cookies_file, user_agent, use_impersonate, privacy_mode],
         outputs=[download_message],
     )
     download_video_btn.click(
-        fn=lambda current_url, analyzed_url, fmt, title, platform, video_id, cm, cf, ua, imp: handle_download_request(current_url, analyzed_url, fmt, "video_only", title, platform, video_id, cm, cf, ua, imp),
-        inputs=[url_input, analyzed_url_state, video_list, video_title_state, platform_state, video_id_state, cookie_mode, cookies_file, user_agent, use_impersonate],
+        fn=lambda current_url, analyzed_url, fmt, title, platform, video_id, cm, cf, ua, imp, priv: handle_download_request(current_url, analyzed_url, fmt, "video_only", title, platform, video_id, cm, cf, ua, imp, priv),
+        inputs=[url_input, analyzed_url_state, video_list, video_title_state, platform_state, video_id_state, cookie_mode, cookies_file, user_agent, use_impersonate, privacy_mode],
         outputs=[download_message],
     )
     download_audio_btn.click(
-        fn=lambda current_url, analyzed_url, fmt, title, platform, video_id, cm, cf, ua, imp: handle_download_request(current_url, analyzed_url, fmt, "audio_only", title, platform, video_id, cm, cf, ua, imp),
-        inputs=[url_input, analyzed_url_state, audio_list, video_title_state, platform_state, video_id_state, cookie_mode, cookies_file, user_agent, use_impersonate],
+        fn=lambda current_url, analyzed_url, fmt, title, platform, video_id, cm, cf, ua, imp, priv: handle_download_request(current_url, analyzed_url, fmt, "audio_only", title, platform, video_id, cm, cf, ua, imp, priv),
+        inputs=[url_input, analyzed_url_state, audio_list, video_title_state, platform_state, video_id_state, cookie_mode, cookies_file, user_agent, use_impersonate, privacy_mode],
         outputs=[download_message],
     )
     download_merge_btn.click(
-        fn=lambda current_url, analyzed_url, v, a, title, platform, video_id, cm, cf, ua, imp: handle_download_request(current_url, analyzed_url, f"{v}+{a}", "merge", title, platform, video_id, cm, cf, ua, imp),
-        inputs=[url_input, analyzed_url_state, video_merge_list, audio_merge_list, video_title_state, platform_state, video_id_state, cookie_mode, cookies_file, user_agent, use_impersonate],
+        fn=lambda current_url, analyzed_url, v, a, title, platform, video_id, cm, cf, ua, imp, priv: handle_download_request(current_url, analyzed_url, f"{v}+{a}", "merge", title, platform, video_id, cm, cf, ua, imp, priv),
+        inputs=[url_input, analyzed_url_state, video_merge_list, audio_merge_list, video_title_state, platform_state, video_id_state, cookie_mode, cookies_file, user_agent, use_impersonate, privacy_mode],
         outputs=[download_message],
     )
 
